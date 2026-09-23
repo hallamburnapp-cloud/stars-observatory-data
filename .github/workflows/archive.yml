@@ -1,0 +1,37 @@
+name: Daily snapshot archive
+
+on:
+  schedule:
+    - cron: "30 6 * * *" # 06:30 UTC — after the observatory's 06:00 UTC refresh & deploy
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: snapshot-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and archive today's deployed dataset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir snap && cd snap
+          for f in sats.json stats.json national_law.json citation.json; do
+            curl -fsSL --retry 3 --retry-delay 30 "https://starsobservatory.org/data/$f" -o "$f"
+          done
+          SNAP=$(python3 -c "import json;print(json.load(open('sats.json'))['generated'][:10])")
+          echo "Snapshot date: $SNAP"
+          tar -czf "../snapshot-$SNAP.tar.gz" sats.json stats.json national_law.json citation.json
+          cd ..
+          gh release view data-archive >/dev/null 2>&1 || gh release create data-archive \
+            --title "Daily data snapshots" \
+            --notes "Rolling archive of STARS Observatory's generated daily datasets. Each snapshot-YYYY-MM-DD.tar.gz is the exact dataset behind the OSCOLA citation's 'data snapshot' date for that day (sats, stats, national-law join, citation manifest). Generated data: CC-BY 4.0."
+          gh release upload data-archive "snapshot-$SNAP.tar.gz" --clobber
