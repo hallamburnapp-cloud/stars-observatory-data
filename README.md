@@ -10,8 +10,9 @@ STARS Observatory's OSCOLA citation identifies the software by an archived, DOI-
 
 - `sats.json` — the propagated object population (element sets, ownership, registration join)
 - `stats.json` — catalog-wide statistics (by type, owner, registration, constellation)
-- `national_law.json` — the national space legislation join
 - `citation.json` — the citation manifest deployed that day (version, DOIs, snapshot date)
+
+Snapshots made before STARS Observatory v1.8.0 also contain `national_law.json`, the national space legislation join, which was withdrawn from the instrument in v1.8.0.
 
 ## Retrieving a cited snapshot
 
