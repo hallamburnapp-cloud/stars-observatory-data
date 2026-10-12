@@ -34,10 +34,13 @@ TAG = "data-archive"
 INDEX = "snapshots.csv"
 FIELDS = ["file", "snapshot_date", "sats_generated", "stats_generated", "sha256", "archived_utc"]
 TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+# The release description; the workflow keeps the live release in step with it.
 NOTES = ("Rolling archive of STARS Observatory's generated daily datasets. Each snapshot-YYYY-MM-DD.tar.gz is the "
          "exact dataset behind the OSCOLA citation's 'data snapshot' date for that day (sats, stats, citation "
-         "manifest). Archived files are never replaced; snapshots.csv in the repository lists every file with its "
-         "SHA-256 checksum. Generated data: CC-BY 4.0.")
+         "manifest; snapshots made before v1.8.0 also contain the withdrawn national-law join). Archived files are "
+         "never replaced: a different dataset published later under an archived date is kept alongside as "
+         "snapshot-YYYY-MM-DD-HHMMZ.tar.gz. snapshots.csv in the repository lists every file with its SHA-256 "
+         "checksum. Generated data: CC-BY 4.0.")
 UA = {"User-Agent": "stars-observatory-archive"}
 
 
@@ -149,6 +152,12 @@ def output(key, value):
 def archive_once(dry):
     """Returns 'done' or 'changed' (the site was redeployed while it was being read)."""
     rel = release(dry)
+    if rel.get("id") and rel.get("body") != NOTES:
+        if dry:
+            print("Would update the release description to match the archive's rules.")
+        else:
+            api(f"repos/{REPO}/releases/{rel['id']}", json.dumps({"body": NOTES}).encode(), "PATCH")
+            print("Updated the release description to match the archive's rules.")
     assets = assets_of(rel)
     index = read_index()
     gen = json.loads(live("stats.json"))["generated"]
