@@ -1,8 +1,12 @@
-name: Daily snapshot archive
+name: Snapshot archive
 
 on:
   schedule:
-    - cron: "30 6 * * *" # 06:30 UTC — after the observatory's 06:00 UTC refresh & deploy
+    # Every hour, off the top of the hour. The observatory refreshes once a day,
+    # but GitHub can start scheduled runs hours late, so the archive assumes no
+    # time of day: it checks the live site each hour and archives a snapshot the
+    # first time it sees it (archive.py explains the rules).
+    - cron: "41 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -18,20 +22,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch and archive today's deployed dataset
+      - name: Archive the live snapshot unless it is archived already
+        id: archive
         env:
           GH_TOKEN: ${{ github.token }}
+        run: python3 archive.py
+
+      # The index lists every archived file with its SHA-256 checksum. Committing
+      # it is also repository activity, so GitHub never switches off this schedule
+      # (it does so in a public repository after 60 days without commits).
+      - name: Commit the snapshot index
+        if: steps.archive.outputs.archived != ''
+        env:
+          ARCHIVED: ${{ steps.archive.outputs.archived }}
         run: |
-          set -euo pipefail
-          mkdir snap && cd snap
-          for f in sats.json stats.json citation.json; do
-            curl -fsSL --retry 3 --retry-delay 30 "https://starsobservatory.org/data/$f" -o "$f"
-          done
-          SNAP=$(python3 -c "import json;print(json.load(open('sats.json'))['generated'][:10])")
-          echo "Snapshot date: $SNAP"
-          tar -czf "../snapshot-$SNAP.tar.gz" sats.json stats.json citation.json
-          cd ..
-          gh release view data-archive >/dev/null 2>&1 || gh release create data-archive \
-            --title "Daily data snapshots" \
-            --notes "Rolling archive of STARS Observatory's generated daily datasets. Each snapshot-YYYY-MM-DD.tar.gz is the exact dataset behind the OSCOLA citation's 'data snapshot' date for that day (sats, stats, citation manifest). Generated data: CC-BY 4.0."
-          gh release upload data-archive "snapshot-$SNAP.tar.gz" --clobber
+          git config user.name "stars-observatory-bot"
+          git config user.email "actions@github.com"
+          git add snapshots.csv
+          git diff --cached --quiet && exit 0
+          git commit -m "Archive index: $ARCHIVED"
+          git pull --rebase origin main
+          git push
