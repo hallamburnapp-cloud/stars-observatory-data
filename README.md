@@ -5,6 +5,7 @@ Companion archive for [STARS Observatory](https://starsobservatory.org) ([source
 Every hour, a scheduled workflow in this repository checks the observatory's deployed dataset. The first time it sees a new snapshot, it attaches it to the rolling [`data-archive`](https://github.com/hallamburnapp-cloud/stars-observatory-data/releases/tag/data-archive) release as `snapshot-YYYY-MM-DD.tar.gz` and lists it in [`snapshots.csv`](snapshots.csv) with its SHA-256 checksum. The observatory refreshes once a day, but GitHub can start scheduled runs hours late, so the archive does not assume a time of day.
 
 - **Archived files are never replaced.** If a different dataset is later published under a date that is already archived, for example after a late re-run, it is kept alongside as `snapshot-YYYY-MM-DD-HHMMZ.tar.gz`, where HHMM is the time that dataset was fetched (UTC).
+- **Staleness alarm.** The observatory refreshes once a day. If the live snapshot is more than 30 hours old, the archive opens an issue in this repository and closes it once a fresher snapshot is live. This also catches a day on which no refresh ran at all, which no failure alert can report.
 - **Coverage.** The archive starts on 23 September 2026. It has no file for 25 September 2026: under the earlier once-a-day schedule, that snapshot went live after the day's archive run and was replaced before the next one.
 
 ## Why

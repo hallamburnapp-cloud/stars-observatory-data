@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  issues: write # the staleness alarm opens and closes one issue
 
 concurrency:
   group: snapshot-archive
@@ -20,7 +21,7 @@ jobs:
   archive:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Archive the live snapshot unless it is archived already
         id: archive
