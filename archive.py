@@ -18,6 +18,11 @@ Rules
 - Every archived file is listed in snapshots.csv with its SHA-256 checksum. The
   workflow commits that file, which is also repository activity, so GitHub never
   switches off this schedule (it does so after 60 days without commits).
+- Staleness alarm: the observatory refreshes once a day. When the live snapshot is
+  more than 30 hours old, the daily refresh has not run or has not succeeded, so
+  this opens one issue here; it closes the issue when a fresher snapshot is live.
+  This also catches a day on which GitHub never started the refresh at all, which
+  no failure alert can report.
 
 Usage:
   archive.py                 archive the live snapshot if needed and update snapshots.csv
@@ -26,7 +31,7 @@ Usage:
 """
 import csv, gzip, hashlib, io, json, os, sys, tarfile, time
 import urllib.error, urllib.parse, urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 
 REPO = os.environ.get("GITHUB_REPOSITORY", "hallamburnapp-cloud/stars-observatory-data")
 LIVE = "https://starsobservatory.org/data/"
@@ -42,6 +47,9 @@ NOTES = ("Rolling archive of STARS Observatory's generated daily datasets. Each 
          "snapshot-YYYY-MM-DD-HHMMZ.tar.gz. snapshots.csv in the repository lists every file with its SHA-256 "
          "checksum. Generated data: CC-BY 4.0.")
 UA = {"User-Agent": "stars-observatory-archive"}
+STALE_HOURS = 30
+STALE_TITLE = "Live site has not refreshed for more than 30 hours"
+REFRESH_RUNS = "https://github.com/hallamburnapp-cloud/stars-observatory/actions"
 
 
 def request(url, data=None, headers=None, method=None, tries=3):
@@ -149,6 +157,39 @@ def output(key, value):
             f.write(f"{key}={value}\n")
 
 
+def parse_utc(ts):
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def staleness(gen, dry):
+    """Open one issue when the live snapshot is over 30 hours old; close it once a fresher one is live."""
+    age = (datetime.now(timezone.utc) - parse_utc(gen)).total_seconds() / 3600
+    issues = api(f"repos/{REPO}/issues?state=open&per_page=100")
+    open_issue = next((i for i in issues if i.get("title") == STALE_TITLE and "pull_request" not in i), None)
+    fetched = f"{gen[:10]} {gen[11:16]} UTC"
+    if age > STALE_HOURS and not open_issue:
+        body = (f"The snapshot on starsobservatory.org was fetched at {fetched}, {age:.0f} hours ago, and no newer one "
+                f"has been published. The observatory refreshes once a day, so its daily refresh has not run or has "
+                f"not succeeded. Check the refresh runs: {REFRESH_RUNS}. This issue closes itself when a fresher "
+                f"snapshot is live.")
+        if dry:
+            print(f"Would open the issue '{STALE_TITLE}' (snapshot {age:.1f} hours old).")
+        else:
+            api(f"repos/{REPO}/issues", json.dumps({"title": STALE_TITLE, "body": body}).encode(), "POST")
+            print(f"::warning::The live snapshot is {age:.0f} hours old; opened the issue '{STALE_TITLE}'.")
+    elif age <= STALE_HOURS and open_issue:
+        note = f"Resolved: starsobservatory.org now serves the snapshot fetched at {fetched}."
+        if dry:
+            print(f"Would close issue #{open_issue['number']}: the snapshot is {age:.1f} hours old.")
+        else:
+            api(f"repos/{REPO}/issues/{open_issue['number']}/comments", json.dumps({"body": note}).encode(), "POST")
+            api(f"repos/{REPO}/issues/{open_issue['number']}", json.dumps({"state": "closed", "state_reason": "completed"}).encode(), "PATCH")
+            print(f"Closed issue #{open_issue['number']}: the snapshot is fresh again.")
+    else:
+        state = "issue already open" if open_issue else "within the limit"
+        print(f"Snapshot age {age:.1f} hours ({state}; alarm above {STALE_HOURS} hours).")
+
+
 def archive_once(dry):
     """Returns 'done' or 'changed' (the site was redeployed while it was being read)."""
     rel = release(dry)
@@ -163,6 +204,10 @@ def archive_once(dry):
     gen = json.loads(live("stats.json"))["generated"]
     date = gen[:10]
     print(f"Live snapshot {date}, dataset generated {gen}")
+    try:
+        staleness(gen, dry)
+    except Exception as e:  # the alarm must never stop the archiving
+        print(f"::warning::Staleness check failed: {e}")
     hit = next((r for r in index if r["stats_generated"] == gen), None)
     if hit:
         print(f"Already archived as {hit['file']}.")
