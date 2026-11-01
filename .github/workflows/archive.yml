@@ -23,17 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Also the staleness watchdog: it opens an issue that @-mentions the
+      # maintainer when the live snapshot is more than 30 hours old, and fails
+      # if that check cannot be made.
       - name: Archive the live snapshot unless it is archived already
         id: archive
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 archive.py
 
-      # The index lists every archived file with its SHA-256 checksum. Committing
-      # it is also repository activity, so GitHub never switches off this schedule
-      # (it does so in a public repository after 60 days without commits).
+      # The index lists every archived file with its SHA-256 checksum.
       - name: Commit the snapshot index
-        if: steps.archive.outputs.archived != ''
+        if: ${{ !cancelled() && steps.archive.outputs.archived != '' }}
         env:
           ARCHIVED: ${{ steps.archive.outputs.archived }}
         run: |
@@ -44,3 +45,35 @@ jobs:
           git commit -m "Archive index: $ARCHIVED"
           git pull --rebase origin main
           git push
+
+      # GitHub switches off a public repository's scheduled workflows after 60
+      # days without repository activity. The index commits prevent that while
+      # snapshots arrive; if none arrives for 50 days (the observatory down for
+      # that long), an empty commit keeps this watchdog running.
+      - name: Keep this schedule switched on
+        if: ${{ !cancelled() }}
+        env:
+          KEEPALIVE_DAYS: 50
+        run: |
+          set -euo pipefail
+          DAYS=$(( ($(date -u +%s) - $(git log -1 --format=%ct)) / 86400 ))
+          if [ "$DAYS" -lt "$KEEPALIVE_DAYS" ]; then
+            echo "Last commit $DAYS days ago. GitHub switches the schedule off after 60 days without one; nothing to do."
+            exit 0
+          fi
+          git config user.name "stars-observatory-bot"
+          git config user.email "actions@github.com"
+          git commit --allow-empty -m "Keepalive: no commit for $DAYS days"
+          git pull --rebase origin main
+          git push
+          echo "::warning::No commit for $DAYS days: added an empty commit so that GitHub keeps this schedule switched on."
+
+      # While the live site is stale, every run fails, so the Actions failure
+      # emails report it as well as the issue.
+      - name: Fail while the live site is stale
+        if: ${{ !cancelled() && steps.archive.outputs.stale_hours != '' }}
+        env:
+          HOURS: ${{ steps.archive.outputs.stale_hours }}
+        run: |
+          echo "::error title=Live site stale::starsobservatory.org has served the same snapshot for $HOURS hours; the daily refresh should replace it within 30. See the open issue 'Live site has not refreshed for more than 30 hours'."
+          exit 1

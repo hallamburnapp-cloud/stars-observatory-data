@@ -16,13 +16,17 @@ Rules
   late re-run) is kept alongside as snapshot-YYYY-MM-DD-HHMMZ.tar.gz, HHMM being
   the time the dataset was fetched (UTC).
 - Every archived file is listed in snapshots.csv with its SHA-256 checksum. The
-  workflow commits that file, which is also repository activity, so GitHub never
-  switches off this schedule (it does so after 60 days without commits).
+  workflow commits that file. Those commits are also repository activity, which
+  keeps GitHub from switching off this schedule (it does so in a public repository
+  after 60 days without one); while no new snapshot appears, the workflow adds an
+  empty commit after 50 days instead.
 - Staleness alarm: the observatory refreshes once a day. When the live snapshot is
   more than 30 hours old, the daily refresh has not run or has not succeeded, so
-  this opens one issue here; it closes the issue when a fresher snapshot is live.
-  This also catches a day on which GitHub never started the refresh at all, which
-  no failure alert can report.
+  this opens one issue here that @-mentions the maintainer, and every run fails
+  while the snapshot stays stale; the issue closes itself when a fresher snapshot
+  is live. This is the independent watchdog: it also catches a day on which
+  GitHub never started the refresh at all, which no failure alert can report. If
+  the alarm itself cannot be checked or raised, the run fails too.
 
 Usage:
   archive.py                 archive the live snapshot if needed and update snapshots.csv
@@ -47,8 +51,11 @@ NOTES = ("Rolling archive of STARS Observatory's generated daily datasets. Each 
          "snapshot-YYYY-MM-DD-HHMMZ.tar.gz. snapshots.csv in the repository lists every file with its SHA-256 "
          "checksum. Generated data: CC-BY 4.0.")
 UA = {"User-Agent": "stars-observatory-archive"}
+# The staleness alarm's result for this run, reported by main() after the archiving.
+ALARM = {"stale_hours": None, "error": None}
 STALE_HOURS = 30
 STALE_TITLE = "Live site has not refreshed for more than 30 hours"
+MAINTAINER = "hallamburnapp-cloud"
 REFRESH_RUNS = "https://github.com/hallamburnapp-cloud/stars-observatory/actions"
 
 
@@ -162,15 +169,20 @@ def parse_utc(ts):
 
 
 def staleness(gen, dry):
-    """Open one issue when the live snapshot is over 30 hours old; close it once a fresher one is live."""
+    """Open one issue when the live snapshot is over 30 hours old; close it once a fresher one is live.
+
+    Returns the snapshot's age in hours when it is stale, else None. Errors are not caught here:
+    the caller fails the run, so a broken alarm is as loud as a stale site.
+    """
     age = (datetime.now(timezone.utc) - parse_utc(gen)).total_seconds() / 3600
     issues = api(f"repos/{REPO}/issues?state=open&per_page=100")
     open_issue = next((i for i in issues if i.get("title") == STALE_TITLE and "pull_request" not in i), None)
     fetched = f"{gen[:10]} {gen[11:16]} UTC"
     if age > STALE_HOURS and not open_issue:
-        body = (f"The snapshot on starsobservatory.org was fetched at {fetched}, {age:.0f} hours ago, and no newer one "
-                f"has been published. The observatory refreshes once a day, so its daily refresh has not run or has "
-                f"not succeeded. Check the refresh runs: {REFRESH_RUNS}. This issue closes itself when a fresher "
+        body = (f"@{MAINTAINER} The snapshot on starsobservatory.org was fetched at {fetched}, {age:.0f} hours ago, "
+                f"and no newer one has been published. The observatory refreshes once a day, so its daily refresh has "
+                f"not run or has not succeeded. Check the refresh runs: {REFRESH_RUNS}. Until a fresher snapshot is "
+                f"live, every run of this archive's hourly check fails. This issue closes itself when a fresher "
                 f"snapshot is live.")
         if dry:
             print(f"Would open the issue '{STALE_TITLE}' (snapshot {age:.1f} hours old).")
@@ -188,6 +200,7 @@ def staleness(gen, dry):
     else:
         state = "issue already open" if open_issue else "within the limit"
         print(f"Snapshot age {age:.1f} hours ({state}; alarm above {STALE_HOURS} hours).")
+    return age if age > STALE_HOURS else None
 
 
 def archive_once(dry):
@@ -205,9 +218,11 @@ def archive_once(dry):
     date = gen[:10]
     print(f"Live snapshot {date}, dataset generated {gen}")
     try:
-        staleness(gen, dry)
-    except Exception as e:  # the alarm must never stop the archiving
-        print(f"::warning::Staleness check failed: {e}")
+        ALARM["stale_hours"] = staleness(gen, dry)
+        ALARM["error"] = None
+    except Exception as e:  # finish the archiving first; main() then fails the run
+        ALARM["error"] = repr(e)
+        print(f"::error::The staleness alarm could not be checked or raised: {e!r}")
     hit = next((r for r in index if r["stats_generated"] == gen), None)
     if hit:
         print(f"Already archived as {hit['file']}.")
@@ -261,6 +276,11 @@ def main():
         time.sleep(90)
         if archive_once(dry) == "changed":
             sys.exit("::error::The site kept changing while it was being read; nothing was archived.")
+    if ALARM["stale_hours"] is not None:
+        # The workflow fails its last step on this output, after the index commit.
+        output("stale_hours", f"{ALARM['stale_hours']:.0f}")
+    if ALARM["error"]:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
